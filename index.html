@@ -1,0 +1,307 @@
+package fi.rallykartturi.app;
+
+import android.Manifest;
+import android.app.Activity;
+import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.net.Uri;
+import android.os.Bundle;
+import android.speech.tts.TextToSpeech;
+import android.speech.tts.Voice;
+import android.view.WindowManager;
+import android.webkit.GeolocationPermissions;
+import android.webkit.JavascriptInterface;
+import android.webkit.WebChromeClient;
+import android.webkit.WebResourceRequest;
+import android.webkit.WebResourceResponse;
+import android.webkit.WebSettings;
+import android.webkit.WebView;
+import android.webkit.WebViewClient;
+
+import androidx.webkit.WebViewAssetLoader;
+
+import org.json.JSONArray;
+import org.json.JSONObject;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.Locale;
+import java.util.Set;
+
+/**
+ * Rally Kartturi for Android: the web app (assets/index.html) runs in a WebView,
+ * GPS comes through the WebView geolocation API and the co-driver talks with
+ * Android's own text-to-speech engine (WebView has no speech synthesis).
+ */
+public class MainActivity extends Activity {
+
+    private static final String APP_URL = "https://appassets.androidplatform.net/assets/index.html";
+    private static final String APP_HOST = "appassets.androidplatform.net";
+    private static final int REQ_LOCATION = 41;
+
+    // Google TTS voice codes that are male
+    private static final String[] MALE_CODES = {
+        "en-gb-x-rjs", "en-gb-x-gbd", "en-gb-x-gbb",
+        "en-us-x-iom", "en-us-x-iol", "en-us-x-tpd",
+        "en-au-x-aub", "en-au-x-aud", "en-in-x-end"
+    };
+
+    private WebView web;
+    private TextToSpeech tts;
+    private volatile boolean ttsReady = false;
+    private volatile String currentVoiceName = "";
+
+    private GeolocationPermissions.Callback pendingGeoCallback;
+    private String pendingGeoOrigin;
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        // The co-driver must keep talking: keep the screen on while the app is open
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+
+        web = new WebView(this);
+        setContentView(web);
+
+        final WebViewAssetLoader assetLoader = new WebViewAssetLoader.Builder()
+                .addPathHandler("/assets/", new WebViewAssetLoader.AssetsPathHandler(this))
+                .build();
+
+        WebSettings s = web.getSettings();
+        s.setJavaScriptEnabled(true);
+        s.setDomStorageEnabled(true);
+        s.setGeolocationEnabled(true);
+        s.setMediaPlaybackRequiresUserGesture(false);
+        s.setAllowFileAccess(false);
+        s.setAllowContentAccess(false);
+
+        web.setWebViewClient(new WebViewClient() {
+            @Override
+            public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+                return assetLoader.shouldInterceptRequest(request.getUrl());
+            }
+
+            @Override
+            public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
+                Uri uri = request.getUrl();
+                if (APP_HOST.equals(uri.getHost())) return false;
+                // Links to other sites (map attributions etc.) open in the browser
+                try {
+                    startActivity(new Intent(Intent.ACTION_VIEW, uri));
+                } catch (Exception ignored) {
+                }
+                return true;
+            }
+        });
+
+        web.setWebChromeClient(new WebChromeClient() {
+            @Override
+            public void onGeolocationPermissionsShowPrompt(String origin, GeolocationPermissions.Callback callback) {
+                if (hasLocationPermission()) {
+                    callback.invoke(origin, true, false);
+                } else {
+                    pendingGeoOrigin = origin;
+                    pendingGeoCallback = callback;
+                    requestPermissions(new String[]{
+                            Manifest.permission.ACCESS_FINE_LOCATION,
+                            Manifest.permission.ACCESS_COARSE_LOCATION
+                    }, REQ_LOCATION);
+                }
+            }
+        });
+
+        web.addJavascriptInterface(new TtsBridge(), "AndroidTTS");
+
+        tts = new TextToSpeech(this, status -> {
+            if (status != TextToSpeech.SUCCESS) return;
+            ttsReady = true;
+            tts.setLanguage(Locale.UK);
+            tts.setSpeechRate(1.05f);
+            tts.setPitch(0.95f);
+            List<VoiceInfo> voices = englishVoices();
+            if (!voices.isEmpty()) applyVoice(voices.get(0).voice);
+            runOnUiThread(() -> {
+                if (web != null) web.evaluateJavascript("window.onAndroidVoices && window.onAndroidVoices()", null);
+            });
+        });
+
+        if (!hasLocationPermission()) {
+            requestPermissions(new String[]{
+                    Manifest.permission.ACCESS_FINE_LOCATION,
+                    Manifest.permission.ACCESS_COARSE_LOCATION
+            }, REQ_LOCATION);
+        }
+
+        web.loadUrl(APP_URL);
+    }
+
+    private boolean hasLocationPermission() {
+        return checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+                || checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED;
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode != REQ_LOCATION) return;
+        boolean granted = hasLocationPermission();
+        if (pendingGeoCallback != null) {
+            pendingGeoCallback.invoke(pendingGeoOrigin, granted, false);
+            pendingGeoCallback = null;
+            pendingGeoOrigin = null;
+        } else if (granted && web != null) {
+            // Permission arrived after the page loaded: reload so the map finds you
+            web.reload();
+        }
+    }
+
+    @Override
+    public void onBackPressed() {
+        if (web != null && web.canGoBack()) web.goBack();
+        else super.onBackPressed();
+    }
+
+    @Override
+    protected void onDestroy() {
+        if (tts != null) {
+            tts.stop();
+            tts.shutdown();
+        }
+        if (web != null) {
+            web.destroy();
+            web = null;
+        }
+        super.onDestroy();
+    }
+
+    // ------------------------------------------------------------------
+    // Voices
+    // ------------------------------------------------------------------
+
+    private static final class VoiceInfo {
+        final Voice voice;
+        final boolean male;
+        final int score;
+
+        VoiceInfo(Voice voice, boolean male, int score) {
+            this.voice = voice;
+            this.male = male;
+            this.score = score;
+        }
+    }
+
+    private static boolean isMale(Voice v) {
+        String name = v.getName().toLowerCase(Locale.ROOT);
+        for (String code : MALE_CODES) {
+            if (name.startsWith(code)) return true;
+        }
+        if (name.contains("female")) return false;
+        if (name.contains("male")) return true;
+        Set<String> features = v.getFeatures();
+        if (features != null) {
+            for (String f : features) {
+                String lf = f.toLowerCase(Locale.ROOT);
+                if (lf.contains("female")) return false;
+                if (lf.contains("male")) return true;
+            }
+        }
+        return false;
+    }
+
+    private List<VoiceInfo> englishVoices() {
+        List<VoiceInfo> out = new ArrayList<>();
+        Set<Voice> all = null;
+        try {
+            all = tts.getVoices();
+        } catch (Exception ignored) {
+        }
+        if (all == null) return out;
+        for (Voice v : all) {
+            Locale loc = v.getLocale();
+            if (loc == null || !"en".equals(loc.getLanguage())) continue;
+            Set<String> features = v.getFeatures();
+            if (features != null && features.contains(TextToSpeech.Engine.KEY_FEATURE_NOT_INSTALLED)) continue;
+            boolean male = isMale(v);
+            int score = 0;
+            if (male) score += 100;
+            if ("GB".equals(loc.getCountry())) score += 20;
+            if (!v.isNetworkConnectionRequired()) score += 10;
+            score += v.getQuality() / 100;
+            out.add(new VoiceInfo(v, male, score));
+        }
+        Collections.sort(out, (a, b) -> Integer.compare(b.score, a.score));
+        return out;
+    }
+
+    private void applyVoice(Voice v) {
+        try {
+            tts.setVoice(v);
+            currentVoiceName = v.getName();
+        } catch (Exception ignored) {
+        }
+    }
+
+    private static String label(Voice v) {
+        Locale loc = v.getLocale();
+        String country = loc.getDisplayCountry(Locale.ENGLISH);
+        String name = v.getName();
+        String code = name;
+        int x = name.indexOf("-x-");
+        if (x >= 0) {
+            code = name.substring(x + 3);
+            int dash = code.indexOf('-');
+            if (dash > 0) code = code.substring(0, dash);
+        }
+        return "English" + (country.isEmpty() ? "" : " (" + country + ")") + " · " + code
+                + (v.isNetworkConnectionRequired() ? " · online" : "");
+    }
+
+    /** Called from JavaScript as window.AndroidTTS */
+    private final class TtsBridge {
+        @JavascriptInterface
+        public void speak(String text, boolean interrupt) {
+            if (!ttsReady || text == null) return;
+            tts.speak(text, interrupt ? TextToSpeech.QUEUE_FLUSH : TextToSpeech.QUEUE_ADD, null,
+                    "note-" + System.nanoTime());
+        }
+
+        @JavascriptInterface
+        public void stop() {
+            if (ttsReady) tts.stop();
+        }
+
+        @JavascriptInterface
+        public String voices() {
+            JSONArray arr = new JSONArray();
+            if (!ttsReady) return arr.toString();
+            try {
+                for (VoiceInfo vi : englishVoices()) {
+                    JSONObject o = new JSONObject();
+                    o.put("name", vi.voice.getName());
+                    o.put("label", label(vi.voice));
+                    o.put("male", vi.male);
+                    arr.put(o);
+                }
+            } catch (Exception ignored) {
+            }
+            return arr.toString();
+        }
+
+        @JavascriptInterface
+        public String currentVoice() {
+            return currentVoiceName;
+        }
+
+        @JavascriptInterface
+        public void setVoice(String name) {
+            if (!ttsReady || name == null) return;
+            for (VoiceInfo vi : englishVoices()) {
+                if (name.equals(vi.voice.getName())) {
+                    applyVoice(vi.voice);
+                    return;
+                }
+            }
+        }
+    }
+}

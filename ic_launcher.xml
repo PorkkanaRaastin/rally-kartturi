@@ -1,0 +1,46 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'fi.rallykartturi.app'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'fi.rallykartturi.app'
+        minSdk 26
+        targetSdk 34
+        // GitHub Actions sets BUILD_NUMBER so every build can install over the previous one
+        versionCode((System.getenv('BUILD_NUMBER') ?: '1') as int)
+        versionName "1.${System.getenv('BUILD_NUMBER') ?: '0'}"
+    }
+
+    signingConfigs {
+        // A fixed key so new versions install as updates. This is a personal hobby key, not a secret.
+        rally {
+            storeFile file('rallykartturi.jks')
+            storePassword 'rallykartturi'
+            keyAlias 'rally'
+            keyPassword 'rallykartturi'
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.rally
+        }
+        debug {
+            signingConfig signingConfigs.rally
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    implementation 'androidx.webkit:webkit:1.11.0'
+}
