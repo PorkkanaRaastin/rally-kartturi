@@ -1,5 +1,8 @@
 name: Build APK
 
+# Everything needed for the Android app is inside this one file.
+# The repo only needs this file and index.html.
+
 on:
   push:
     branches: [main]
@@ -14,6 +17,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Check index.html
+        run: |
+          if ! grep -q "AndroidTTS" index.html; then
+            echo "::error::index.html is an old version. Upload the index.html from RallyKartturi-android.zip."
+            exit 1
+          fi
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -23,10 +33,519 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Put the web app inside the APK
+      - name: Create the Android project
         run: |
-          mkdir -p android/app/src/main/assets
-          cp index.html android/app/src/main/assets/index.html
+          set -e
+          mkdir -p android android/app android/app/src/main android/app/src/main/java/fi/rallykartturi/app android/app/src/main/res/drawable android/app/src/main/res/mipmap-anydpi-v26 android/app/src/main/res/values android/app/src/main/assets
+          cat > android/settings.gradle <<'EOF_RALLY'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "RallyKartturi"
+          include ':app'
+          EOF_RALLY
+          cat > android/build.gradle <<'EOF_RALLY'
+          plugins {
+              id 'com.android.application' version '8.5.2' apply false
+          }
+          EOF_RALLY
+          cat > android/gradle.properties <<'EOF_RALLY'
+          org.gradle.jvmargs=-Xmx2g -Dfile.encoding=UTF-8
+          android.useAndroidX=true
+          android.nonTransitiveRClass=true
+          EOF_RALLY
+          cat > android/app/build.gradle <<'EOF_RALLY'
+          plugins {
+              id 'com.android.application'
+          }
+
+          android {
+              namespace 'fi.rallykartturi.app'
+              compileSdk 34
+
+              defaultConfig {
+                  applicationId 'fi.rallykartturi.app'
+                  minSdk 26
+                  targetSdk 34
+                  // GitHub Actions sets BUILD_NUMBER so every build can install over the previous one
+                  versionCode((System.getenv('BUILD_NUMBER') ?: '1') as int)
+                  versionName "1.${System.getenv('BUILD_NUMBER') ?: '0'}"
+              }
+
+              signingConfigs {
+                  // A fixed key so new versions install as updates. This is a personal hobby key, not a secret.
+                  rally {
+                      storeFile file('rallykartturi.jks')
+                      storePassword 'rallykartturi'
+                      keyAlias 'rally'
+                      keyPassword 'rallykartturi'
+                  }
+              }
+
+              buildTypes {
+                  release {
+                      minifyEnabled false
+                      signingConfig signingConfigs.rally
+                  }
+                  debug {
+                      signingConfig signingConfigs.rally
+                  }
+              }
+
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+          }
+
+          dependencies {
+              implementation 'androidx.webkit:webkit:1.11.0'
+          }
+          EOF_RALLY
+          cat > android/app/src/main/AndroidManifest.xml <<'EOF_RALLY'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+              <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+
+              <!-- Lets the app find the phone's text-to-speech engine on Android 11+ -->
+              <queries>
+                  <intent>
+                      <action android:name="android.intent.action.TTS_SERVICE" />
+                  </intent>
+              </queries>
+
+              <application
+                  android:label="Rally Kartturi"
+                  android:icon="@mipmap/ic_launcher"
+                  android:roundIcon="@mipmap/ic_launcher"
+                  android:theme="@style/AppTheme"
+                  android:hardwareAccelerated="true"
+                  android:usesCleartextTraffic="false">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:launchMode="singleTask"
+                      android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|keyboard|uiMode|smallestScreenSize">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF_RALLY
+          cat > android/app/src/main/res/values/styles.xml <<'EOF_RALLY'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <color name="icon_bg">#1B1F24</color>
+              <style name="AppTheme" parent="@android:style/Theme.Material.Light.NoActionBar">
+                  <item name="android:windowBackground">@android:color/white</item>
+                  <item name="android:statusBarColor">@android:color/white</item>
+                  <item name="android:windowLightStatusBar">true</item>
+                  <item name="android:navigationBarColor">@android:color/white</item>
+              </style>
+          </resources>
+          EOF_RALLY
+          cat > android/app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml <<'EOF_RALLY'
+          <?xml version="1.0" encoding="utf-8"?>
+          <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+              <background android:drawable="@color/icon_bg" />
+              <foreground android:drawable="@drawable/ic_flag" />
+          </adaptive-icon>
+          EOF_RALLY
+          cat > android/app/src/main/res/drawable/ic_flag.xml <<'EOF_RALLY'
+          <?xml version="1.0" encoding="utf-8"?>
+          <!-- Chequered rally flag, drawn inside the 66dp safe zone of a 108dp adaptive icon -->
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="108dp"
+              android:height="108dp"
+              android:viewportWidth="108"
+              android:viewportHeight="108">
+              <!-- pole -->
+              <path android:fillColor="#FFFFFF" android:pathData="M36,30h4v50h-4z" />
+              <!-- flag cloth -->
+              <path android:fillColor="#FFFFFF" android:pathData="M40,31h34v24h-34z" />
+              <!-- orange squares -->
+              <path android:fillColor="#E8590C"
+                  android:pathData="M40,31h8.5v8h-8.5zM57,31h8.5v8h-8.5zM48.5,39h8.5v8h-8.5zM65.5,39h8.5v8h-8.5zM40,47h8.5v8h-8.5zM57,47h8.5v8h-8.5z" />
+          </vector>
+          EOF_RALLY
+          cat > android/app/src/main/java/fi/rallykartturi/app/MainActivity.java <<'EOF_RALLY'
+          package fi.rallykartturi.app;
+
+          import android.Manifest;
+          import android.app.Activity;
+          import android.content.Intent;
+          import android.content.pm.PackageManager;
+          import android.net.Uri;
+          import android.os.Bundle;
+          import android.speech.tts.TextToSpeech;
+          import android.speech.tts.Voice;
+          import android.view.WindowManager;
+          import android.webkit.GeolocationPermissions;
+          import android.webkit.JavascriptInterface;
+          import android.webkit.WebChromeClient;
+          import android.webkit.WebResourceRequest;
+          import android.webkit.WebResourceResponse;
+          import android.webkit.WebSettings;
+          import android.webkit.WebView;
+          import android.webkit.WebViewClient;
+
+          import androidx.webkit.WebViewAssetLoader;
+
+          import org.json.JSONArray;
+          import org.json.JSONObject;
+
+          import java.util.ArrayList;
+          import java.util.Collections;
+          import java.util.List;
+          import java.util.Locale;
+          import java.util.Set;
+
+          /**
+           * Rally Kartturi for Android: the web app (assets/index.html) runs in a WebView,
+           * GPS comes through the WebView geolocation API and the co-driver talks with
+           * Android's own text-to-speech engine (WebView has no speech synthesis).
+           */
+          public class MainActivity extends Activity {
+
+              private static final String APP_URL = "https://appassets.androidplatform.net/assets/index.html";
+              private static final String APP_HOST = "appassets.androidplatform.net";
+              private static final int REQ_LOCATION = 41;
+
+              // Google TTS voice codes that are male
+              private static final String[] MALE_CODES = {
+                  "en-gb-x-rjs", "en-gb-x-gbd", "en-gb-x-gbb",
+                  "en-us-x-iom", "en-us-x-iol", "en-us-x-tpd",
+                  "en-au-x-aub", "en-au-x-aud", "en-in-x-end"
+              };
+
+              private WebView web;
+              private TextToSpeech tts;
+              private volatile boolean ttsReady = false;
+              private volatile String currentVoiceName = "";
+
+              private GeolocationPermissions.Callback pendingGeoCallback;
+              private String pendingGeoOrigin;
+
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+                  // The co-driver must keep talking: keep the screen on while the app is open
+                  getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+
+                  web = new WebView(this);
+                  setContentView(web);
+
+                  final WebViewAssetLoader assetLoader = new WebViewAssetLoader.Builder()
+                          .addPathHandler("/assets/", new WebViewAssetLoader.AssetsPathHandler(this))
+                          .build();
+
+                  WebSettings s = web.getSettings();
+                  s.setJavaScriptEnabled(true);
+                  s.setDomStorageEnabled(true);
+                  s.setGeolocationEnabled(true);
+                  s.setMediaPlaybackRequiresUserGesture(false);
+                  s.setAllowFileAccess(false);
+                  s.setAllowContentAccess(false);
+
+                  web.setWebViewClient(new WebViewClient() {
+                      @Override
+                      public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+                          return assetLoader.shouldInterceptRequest(request.getUrl());
+                      }
+
+                      @Override
+                      public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
+                          Uri uri = request.getUrl();
+                          if (APP_HOST.equals(uri.getHost())) return false;
+                          // Links to other sites (map attributions etc.) open in the browser
+                          try {
+                              startActivity(new Intent(Intent.ACTION_VIEW, uri));
+                          } catch (Exception ignored) {
+                          }
+                          return true;
+                      }
+                  });
+
+                  web.setWebChromeClient(new WebChromeClient() {
+                      @Override
+                      public void onGeolocationPermissionsShowPrompt(String origin, GeolocationPermissions.Callback callback) {
+                          if (hasLocationPermission()) {
+                              callback.invoke(origin, true, false);
+                          } else {
+                              pendingGeoOrigin = origin;
+                              pendingGeoCallback = callback;
+                              requestPermissions(new String[]{
+                                      Manifest.permission.ACCESS_FINE_LOCATION,
+                                      Manifest.permission.ACCESS_COARSE_LOCATION
+                              }, REQ_LOCATION);
+                          }
+                      }
+                  });
+
+                  web.addJavascriptInterface(new TtsBridge(), "AndroidTTS");
+
+                  tts = new TextToSpeech(this, status -> {
+                      if (status != TextToSpeech.SUCCESS) return;
+                      ttsReady = true;
+                      tts.setLanguage(Locale.UK);
+                      tts.setSpeechRate(1.05f);
+                      tts.setPitch(0.95f);
+                      List<VoiceInfo> voices = englishVoices();
+                      if (!voices.isEmpty()) applyVoice(voices.get(0).voice);
+                      runOnUiThread(() -> {
+                          if (web != null) web.evaluateJavascript("window.onAndroidVoices && window.onAndroidVoices()", null);
+                      });
+                  });
+
+                  if (!hasLocationPermission()) {
+                      requestPermissions(new String[]{
+                              Manifest.permission.ACCESS_FINE_LOCATION,
+                              Manifest.permission.ACCESS_COARSE_LOCATION
+                      }, REQ_LOCATION);
+                  }
+
+                  web.loadUrl(APP_URL);
+              }
+
+              private boolean hasLocationPermission() {
+                  return checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+                          || checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED;
+              }
+
+              @Override
+              public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+                  super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+                  if (requestCode != REQ_LOCATION) return;
+                  boolean granted = hasLocationPermission();
+                  if (pendingGeoCallback != null) {
+                      pendingGeoCallback.invoke(pendingGeoOrigin, granted, false);
+                      pendingGeoCallback = null;
+                      pendingGeoOrigin = null;
+                  } else if (granted && web != null) {
+                      // Permission arrived after the page loaded: reload so the map finds you
+                      web.reload();
+                  }
+              }
+
+              @Override
+              public void onBackPressed() {
+                  if (web != null && web.canGoBack()) web.goBack();
+                  else super.onBackPressed();
+              }
+
+              @Override
+              protected void onDestroy() {
+                  if (tts != null) {
+                      tts.stop();
+                      tts.shutdown();
+                  }
+                  if (web != null) {
+                      web.destroy();
+                      web = null;
+                  }
+                  super.onDestroy();
+              }
+
+              // ------------------------------------------------------------------
+              // Voices
+              // ------------------------------------------------------------------
+
+              private static final class VoiceInfo {
+                  final Voice voice;
+                  final boolean male;
+                  final int score;
+
+                  VoiceInfo(Voice voice, boolean male, int score) {
+                      this.voice = voice;
+                      this.male = male;
+                      this.score = score;
+                  }
+              }
+
+              private static boolean isMale(Voice v) {
+                  String name = v.getName().toLowerCase(Locale.ROOT);
+                  for (String code : MALE_CODES) {
+                      if (name.startsWith(code)) return true;
+                  }
+                  if (name.contains("female")) return false;
+                  if (name.contains("male")) return true;
+                  Set<String> features = v.getFeatures();
+                  if (features != null) {
+                      for (String f : features) {
+                          String lf = f.toLowerCase(Locale.ROOT);
+                          if (lf.contains("female")) return false;
+                          if (lf.contains("male")) return true;
+                      }
+                  }
+                  return false;
+              }
+
+              private List<VoiceInfo> englishVoices() {
+                  List<VoiceInfo> out = new ArrayList<>();
+                  Set<Voice> all = null;
+                  try {
+                      all = tts.getVoices();
+                  } catch (Exception ignored) {
+                  }
+                  if (all == null) return out;
+                  for (Voice v : all) {
+                      Locale loc = v.getLocale();
+                      if (loc == null || !"en".equals(loc.getLanguage())) continue;
+                      Set<String> features = v.getFeatures();
+                      if (features != null && features.contains(TextToSpeech.Engine.KEY_FEATURE_NOT_INSTALLED)) continue;
+                      boolean male = isMale(v);
+                      int score = 0;
+                      if (male) score += 100;
+                      if ("GB".equals(loc.getCountry())) score += 20;
+                      if (!v.isNetworkConnectionRequired()) score += 10;
+                      score += v.getQuality() / 100;
+                      out.add(new VoiceInfo(v, male, score));
+                  }
+                  Collections.sort(out, (a, b) -> Integer.compare(b.score, a.score));
+                  return out;
+              }
+
+              private void applyVoice(Voice v) {
+                  try {
+                      tts.setVoice(v);
+                      currentVoiceName = v.getName();
+                  } catch (Exception ignored) {
+                  }
+              }
+
+              private static String label(Voice v) {
+                  Locale loc = v.getLocale();
+                  String country = loc.getDisplayCountry(Locale.ENGLISH);
+                  String name = v.getName();
+                  String code = name;
+                  int x = name.indexOf("-x-");
+                  if (x >= 0) {
+                      code = name.substring(x + 3);
+                      int dash = code.indexOf('-');
+                      if (dash > 0) code = code.substring(0, dash);
+                  }
+                  return "English" + (country.isEmpty() ? "" : " (" + country + ")") + " · " + code
+                          + (v.isNetworkConnectionRequired() ? " · online" : "");
+              }
+
+              /** Called from JavaScript as window.AndroidTTS */
+              private final class TtsBridge {
+                  @JavascriptInterface
+                  public void speak(String text, boolean interrupt) {
+                      if (!ttsReady || text == null) return;
+                      tts.speak(text, interrupt ? TextToSpeech.QUEUE_FLUSH : TextToSpeech.QUEUE_ADD, null,
+                              "note-" + System.nanoTime());
+                  }
+
+                  @JavascriptInterface
+                  public void stop() {
+                      if (ttsReady) tts.stop();
+                  }
+
+                  @JavascriptInterface
+                  public String voices() {
+                      JSONArray arr = new JSONArray();
+                      if (!ttsReady) return arr.toString();
+                      try {
+                          for (VoiceInfo vi : englishVoices()) {
+                              JSONObject o = new JSONObject();
+                              o.put("name", vi.voice.getName());
+                              o.put("label", label(vi.voice));
+                              o.put("male", vi.male);
+                              arr.put(o);
+                          }
+                      } catch (Exception ignored) {
+                      }
+                      return arr.toString();
+                  }
+
+                  @JavascriptInterface
+                  public String currentVoice() {
+                      return currentVoiceName;
+                  }
+
+                  @JavascriptInterface
+                  public void setVoice(String name) {
+                      if (!ttsReady || name == null) return;
+                      for (VoiceInfo vi : englishVoices()) {
+                          if (name.equals(vi.voice.getName())) {
+                              applyVoice(vi.voice);
+                              return;
+                          }
+                      }
+                  }
+              }
+          }
+          EOF_RALLY
+          base64 -d > android/app/rallykartturi.jks <<'EOF_RALLY'
+          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
+          wIfEO64Ny2hD85cMJG9YmLYsq9QCAicQ
+          EOF_RALLY
+
+      - name: Put the web app inside the APK
+        run: cp index.html android/app/src/main/assets/index.html
 
       - name: Build
         working-directory: android
