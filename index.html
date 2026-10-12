@@ -554,10 +554,10 @@ return maplibregl$1;
     }
     const lay = { 'line-cap': 'round', 'line-join': 'round' };
     const add = (def) => { if (!map.getLayer(def.id)) map.addLayer(def); };
-    add({ id: 'alts-casing', type: 'line', source: 'alts', layout: lay, paint: { 'line-color': '#7f8ea8', 'line-width': 9 } });
-    add({ id: 'alts-line', type: 'line', source: 'alts', layout: lay, paint: { 'line-color': '#b9c6e0', 'line-width': 6 } });
-    add({ id: 'route-casing', type: 'line', source: 'route', layout: lay, paint: { 'line-color': night ? '#4b14a8' : '#1c48c4', 'line-width': night ? 14 : 10 } });
-    add({ id: 'route-line', type: 'line', source: 'route', layout: lay, paint: { 'line-color': night ? '#8a3dff' : '#2f6bff', 'line-width': night ? 10 : 7 } });
+    add({ id: 'alts-casing', type: 'line', source: 'alts', layout: lay, paint: { 'line-color': '#8f7bb8', 'line-width': 9 } });
+    add({ id: 'alts-line', type: 'line', source: 'alts', layout: lay, paint: { 'line-color': '#cdbcf2', 'line-width': 6 } });
+    add({ id: 'route-casing', type: 'line', source: 'route', layout: lay, paint: { 'line-color': '#4b14a8', 'line-width': night ? 14 : 10 } });
+    add({ id: 'route-line', type: 'line', source: 'route', layout: lay, paint: { 'line-color': '#8a3dff', 'line-width': night ? 10 : 7 } });
     add({ id: 'passed-line', type: 'line', source: 'passed', layout: lay, paint: { 'line-color': night ? '#3a3f46' : '#9aa3ad', 'line-width': night ? 10 : 7 } });
     if (!layerEventsBound) {
       layerEventsBound = true;
@@ -571,11 +571,16 @@ return maplibregl$1;
     }
   }
   map.on('style.load', addRouteLayers);
+  // Safety net: if a style change ever drops our layers, put them back
+  map.on('styledata', () => {
+    try { if (map.isStyleLoaded() && !map.getLayer('route-line')) addRouteLayers(); } catch (e) { /* style still loading */ }
+  });
 
   function setTheme(t) {
     if (t === theme) return;
     theme = t;
-    map.setStyle(t === 'night' ? NIGHT_STYLE : DAY_STYLE);
+    // diff:false forces a full reload, so 'style.load' fires and the route layers are added back
+    map.setStyle(t === 'night' ? NIGHT_STYLE : DAY_STYLE, { diff: false });
   }
 
   // =====================================================================
@@ -1506,7 +1511,25 @@ return maplibregl$1;
   }
   function tickTimer() { $('sTime').textContent = fmtStopwatch(performance.now() - navStart); }
 
+  // iPhone Safari only allows speech that starts directly from a tap.
+  // Speak a silent utterance right away so later notes are allowed.
+  function unlockAudio() {
+    try {
+      if (!native && synth) {
+        synth.cancel();
+        const u = new SpeechSynthesisUtterance(' ');
+        u.volume = 0;
+        synth.speak(u);
+      }
+    } catch (e) { /* ignore */ }
+    try {
+      audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+    } catch (e) { /* ignore */ }
+  }
+
   async function startNav() {
+    unlockAudio();
     if (!geo) return;
     if (!me) { startWatch(); toast('Navigation needs your location. Allow location and try again.', true, 6000); return; }
     // Always navigate from where you are now
